@@ -70,7 +70,7 @@ loadSamples <- function(projectDir=".") {
 	mzrock$sampleColors[ mzrock$blankSamples ] = "red"; 
 
 	#align samples
-	alignSamples();
+	alignSamples();	
 
 	#construct EICs for each SRM
 	mzrock$peaks=calculatePeaks(plot=FALSE);
@@ -81,6 +81,20 @@ loadSamples <- function(projectDir=".") {
 	#create group names by appending "Group" in front of the groupRank
 	mzrock$peaks$group = paste(mzrock$peaks$srmid, "Group", mzrock$peaks$groupRank);
 }
+
+
+#this function creates a subdirectory reports in the folder where this
+#code is runnign and return name of the parent directory as an output
+#the name of the parent directory is prefixed to the name of the output files 
+setupReportDir = function() {
+	#crete directory for reports
+	dir.create("reports",showWarnings=FALSE);
+	#prefix name of the working directory to the name of output file
+	dirname= gsub(".*/", "", getwd(), perl=TRUE);  # Bryson's fault
+	prefix = paste("reports/", dirname,"-", sep="");
+	return(prefix);
+}
+
 
 
 calculatePeaks = function(srmIds=NA,plot=FALSE,maxGroupNum=5, group0cutoff=.5) { 
@@ -296,34 +310,56 @@ reduceGroups = function(cpeaks) {
 alignSamples = function() {
 	cat("Aligning samples\n")
 
-	minIntensity = 1000;	#align only peaks with intensity at least this high
-	minNObs = 20;			#align samples only if they share this many peaksj
-	minCor	= 0.9;			#align samples only if groups have high correlations
+	minIntensity = 100;		#align only peaks with intensity at least this high
+	minNObs = 10;			#align samples only if they share this many peaksj
 	gpeaks =  mzrock$samples$intensity > minIntensity;
-	N = sum(gpeaks,na.rm=TRUE);
 
 	rtmatrix=tapply( as.numeric(rownames(mzrock$samples))[gpeaks], 
-			list(mzrock$samples$sample[gpeaks],mzrock$samples$srmid[gpeaks]), 
+			list(mzrock$samples$srmid[gpeaks],mzrock$samples$sample[gpeaks]), 
 			function(x) { s=mzrock$samples[x,]; if(max(s$intensity,na.rm=TRUE)>minIntensity) { s$rt[which.max(s$intensity)];} else { return(NA); }}
 	);
 
-	blankSamples = grep("blank", rownames(rtmatrix), ignore.case=TRUE);	
-	if ( length(blankSamples) > 0 ) rtmatrix  = rtmatrix[ -blankSamples, ];	#remove blanks from the alignment
+	ionsmatrix=tapply( as.numeric(rownames(mzrock$samples))[gpeaks], 
+			list(mzrock$samples$srmid[gpeaks],mzrock$samples$sample[gpeaks]), 
+			max, na.rm=TRUE
+	);
 
-	N=nrow(rtmatrix);
-	grpMedianRt=apply(rtmatrix,2, median,na.rm=TRUE);
+	N=ncol(rtmatrix);	#number of samples
+	#blankSamples = grep("blank", colnames(rtmatrix), ignore.case=TRUE);	
+	#if ( length(blankSamples) > 0 ) rtmatrix  = rtmatrix[ -blankSamples, ];	#remove blanks from the alignment
 
+	filterFunction= function(X) { X[ abs((X-mean(X,na.rm=TRUE))/sd(X,na.rm=TRUE)) > 1 ] = NA; X; } 
+	for (i in 1:nrow(rtmatrix))  rtmatrix[i,] = filterFunction(rtmatrix[i,]);
+	grpMedianRt=apply(rtmatrix,1, median,na.rm=TRUE); #median retention time for the highest intestity point within eic
+
+	#ord EICs by retention time of the highest intensity peak
+	orderOfGroups = order(grpMedianRt);		
+	grpMedianRt=grpMedianRt[orderOfGroups];
+	rtmatrix = rtmatrix[orderOfGroups, ];
+	ionsmatrix = ionsmatrix[orderOfGroups, ];
+
+
+	prefix =   setupReportDir();
+	filename = paste(prefix, "alignmentReport.pdf", sep="");
+	pdf(filename,width=11,height=8);
+	par(mfrow=c(2,2));
 	for(i in 1:N) { 
-		sampleName = rownames(rtmatrix)[i];
-		nobs = sum(!is.na(grpMedianRt + rtmatrix[i,])); 
-		if(nobs < 20) next;
-		if(cor(grpMedianRt,rtmatrix[i,],use="complete.obs") < minCor) next;
-		fit=lm(grpMedianRt~rtmatrix[i,]); a=coef(fit)[2]; b=coef(fit)[1]; 
+		sampleName = colnames(rtmatrix)[i];
+		sampleRt =  rtmatrix[,i];
+		sampleIons = ionsmatrix[,i];
+		weights = sampleIons/median(sampleIons,na.rm=TRUE);
+		weights[is.na(weights)]=0;
+		nobs = sum(!is.na(grpMedianRt + sampleRt)); 
+		if(nobs < minNObs) next;
+		#fit=lm(grpMedianRt~rtmatrix[,i]); a=coef(fit)[2]; b=coef(fit)[1]; 
+		#fit = loess(grpMedianRt ~ sampleRt)
+		fit = smooth.spline(sampleRt,grpMedianRt,w=weights,spar=1.5);
+		plot(grpMedianRt,sampleRt,main=sampleName,xlab="Retention Time(sample)", ylab="Retention Time(median of all samples)");
+		lines(fit$y, fit$x,col=2,lwd=2);
 		subset=mzrock$samples$sample == sampleName;
-		if ( is.na(a) || is.na(b) ) next;
-		mzrock$samples$rt[subset] = mzrock$samples$rt[subset]*a+b;
-		cat(sampleName,nobs,a,b,"\n");
+		mzrock$samples$rt[subset] = predict(fit,mzrock$samples$rt[subset])$y
 	}
+	dev.off();
 }
 
 getQuality <- function(peaks=mzrock$peaks) {
@@ -1003,7 +1039,6 @@ writeReport <- function(model) {
 
 	#crete directory for reports
 	dir.create("reports",showWarnings=FALSE);
-
 	#prefix name of the working directory to the name of output file
 	dirname= gsub(".*/", "", getwd(), perl=TRUE);  # Bryson's fault
 	prefix = paste("reports/", dirname,"-", sep="");
