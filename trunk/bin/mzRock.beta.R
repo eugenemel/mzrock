@@ -1,19 +1,16 @@
 library('randomForest'); #for training and classification
 library("waveslim");
 
-#create private env. for mzrock
 if (! exists("mzrock")) { mzrock=new.env(); }
 
-#function to load SRM -> Compound spreadsheet
 loadCompoundNames <- function() { 
-	srmfile = "/mnt/mzRockServer/DataSets/SRM2.csv";
+	srmfile = "/home/melamud/work/mzRock/DataSets/SRM2.csv";
 	if(length(grep("linux", paste(version$os)))==0) srmfile = "C:/mzRock/DataSets/SRM2.csv"; 
 	compounds=read.csv(srmfile);
 	compounds=compounds[!is.na(compounds$precursorIntensity),];
 	return(compounds);
 }
 
-#load mzCSV files from a given project directory
 loadSamples <- function(projectDir=".") {
 
 	csvfiles <- list.files(paste(projectDir),'.mzCSV$');
@@ -28,11 +25,8 @@ loadSamples <- function(projectDir=".") {
 			cat("Ignoring empty input file", filename, "\n");
 			next;
 		}
-	
-		#sample name from filename
-		sampleName = filename; 
-		sampleName=gsub(".*/", "",sampleName); 
-		sampleName=gsub(".mzCSV", "", sampleName);
+
+		sampleName = filename; sampleName=gsub("./", "",sampleName); sampleName=gsub(".mzCSV", "", sampleName);
 
 		#make sure data is clean
 		sample$rt = as.numeric(paste(sample$rt));
@@ -40,15 +34,13 @@ loadSamples <- function(projectDir=".") {
 		sample = sample[ !is.na(sample$rt) & !is.na(sample$intensity), ];	
 		cat(sampleName,nrow(sample),"\n");
 
-		#within each scan, if there are multiple fragments, keep only one fragments with highest intensity
+		#keep only fragments with highest intensity
 		delRows=c();
 		for(i in which(diff(sample$rt)==0)) { 
 			if (sample$intensity[i] < sample$intensity[i+1] ) { r=i; } else { r=i+1; }
 			delRows=c(delRows,r);
 			#cat(i,i+1,r,sample$rt[i],sample$rt[i+1],sample$intensity[i],sample$intensity[i+1],"\n");
 		}
-		
-		#save sample into mzrock env.
 		sample$sample <- sampleName;
 		if (!is.null(delRows)) {
 			mzrock$samples=rbind(mzrock$samples, sample[-delRows, c('rt','intensity','srmid','sample')]);
@@ -61,65 +53,40 @@ loadSamples <- function(projectDir=".") {
 	#renumber rows such that they are sequential
 	rownames(mzrock$samples) = 1:nrow(mzrock$samples);
 	mzrock$sampleNames = unique(paste(mzrock$samples$sample));
-
-	#set sample colors.. rainbow
 	mzrock$sampleColors = rainbow(length(mzrock$sampleNames),start=0.2,end=0.9,gamma=1.5);
 
-	#blank samples are always red
 	mzrock$blankSamples = grep("blan", mzrock$sampleNames,ignore.case=TRUE);
 	mzrock$sampleColors[ mzrock$blankSamples ] = "red"; 
 
 	#align samples
-	alignSamples();	
+	#alignSamples();
 
-	#construct EICs for each SRM
+	#find peaks for all samples and all srms
 	mzrock$peaks=calculatePeaks(plot=FALSE);
-
-	#renumber peaks such that they are sequential
 	rownames(mzrock$peaks) = 1:nrow(mzrock$peaks);
 
-	#create group names by appending "Group" in front of the groupRank
+	#rename groups
 	mzrock$peaks$group = paste(mzrock$peaks$srmid, "Group", mzrock$peaks$groupRank);
 }
-
-
-#this function creates a subdirectory reports in the folder where this
-#code is runnign and return name of the parent directory as an output
-#the name of the parent directory is prefixed to the name of the output files 
-setupReportDir = function() {
-	#crete directory for reports
-	dir.create("reports",showWarnings=FALSE);
-	#prefix name of the working directory to the name of output file
-	dirname= gsub(".*/", "", getwd(), perl=TRUE);  # Bryson's fault
-	prefix = paste("reports/", dirname,"-", sep="");
-	return(prefix);
-}
-
-
 
 calculatePeaks = function(srmIds=NA,plot=FALSE,maxGroupNum=5, group0cutoff=.5) { 
 	cat("calculating Peaks\n");
 
-	#get list of srmids 
 	if (is.na(srmIds)) { srmIds = unique(mzrock$samples$srmid); }
 	else { srmIds = as.factor(srmIds); }
 
-	allpeaks=data.frame();  #data frame with peak location information
 
-	#for each srm
+	allpeaks=data.frame(); 
 	for(sid in levels(srmIds)) {
-		cat(sid,"\n");
-		samples = subset(mzrock$samples, srmid == sid ); 	#get all observations for this SRM
+		cat("Processing", sid,"\n");
+		samples = subset(mzrock$samples, srmid == sid ); 
 		if(nrow(samples)==0) next;
-
-		eics = tapply(1:nrow(samples),samples$sample,list);		#group observations by sample name. ie make EICs
-		expectedRt = getUserSpecifiedRt(sid) * 60;				#expected retention of the peak for the compound 
-
-
-		srmPeaks=data.frame();		#data frame with peaks for a selected SRM
-		for(eic in eics ) {										
+		eics = tapply(1:nrow(samples),samples$sample,list);
+		expectedRt = getUserSpecifiedRt(sid) * 60;
+		srmPeaks=data.frame();
+		for(eic in eics ) {
 			if ( length(eic) < 1 ) next;
-			peaks=enumeratePeaks(samples[ eic, ],plot=plot);		
+			peaks=enumeratePeaks(samples[ eic, ],plot=plot);
 			peaks=mergeOverlapingPeaks(peaks);
 			if(plot==TRUE) points(peaks$rt,peaks$intensity,col=2,cex=3,pch=5); 
 			if(nrow(peaks)>0) srmPeaks=rbind(srmPeaks,peaks);
@@ -130,7 +97,6 @@ calculatePeaks = function(srmIds=NA,plot=FALSE,maxGroupNum=5, group0cutoff=.5) {
 			
 			#group peaks
 			srmPeaks=groupPeaks(srmPeaks,plot=plot);
-			#srmPeaks = groupPeaksNew(srmPeaks,samples);
 			
 			#fill in missing peaks
 			srmPeaks=fillMissingPeaks(srmPeaks);
@@ -138,6 +104,7 @@ calculatePeaks = function(srmIds=NA,plot=FALSE,maxGroupNum=5, group0cutoff=.5) {
 			if (nrow(blankSamples)>0) {
 				srmPeaks$blankBaseLine = getBlankBaseLine(srmPeaks,blankSamples);
 			}
+
 
 			#rank groups by intensity
 			groupSums = tapply(srmPeaks$fracArea,srmPeaks$group, sum,na.rm=TRUE);
@@ -165,14 +132,14 @@ calculatePeaks = function(srmIds=NA,plot=FALSE,maxGroupNum=5, group0cutoff=.5) {
 					}
 				}
 
-					#cat(expectedRt, maxGrp, "\n");
+				cat(expectedRt, maxGrp, "\n");
 
 				if ( !is.na(maxGrp) ) {
 					srmPeaks$groupRank[ srmPeaks$group == maxGrp ] = 0;
 				}
 			}
 			allpeaks=rbind(allpeaks,srmPeaks);
-			#cat(sid, nrow(srmPeaks), nrow(allpeaks), "\n");
+			cat(sid, nrow(srmPeaks), nrow(allpeaks), "\n");
 			if(plot==TRUE) { points(srmPeaks$rt/60,srmPeaks$intensity,pch=srmPeaks$group,cex=3); readline("Press enter"); }
 		}
 	}
@@ -235,62 +202,11 @@ fillMissingPeaks=function(peaks) {
 groupPeaks = function(cpeaks,plot=FALSE) {
 
 	cat("groupingPeaks\n");
+	allpeaksfinale=data.frame(); 
 	cpeaks = groupPeaksSimple(cpeaks);
-	allpeaksfinale = reduceGroups(cpeaks);
-
-	if ( plot==TRUE) {
-		ngroups = max(rpeaks$group);
-		plotSamples(sid1,showPeaks=FALSE);
-		points(rpeaks$rt/60,rpeaks$intensity,cex=2,pch=19,col=rainbow(ngroups)[rpeaks$group]);
-		print(table(rpeaks$sample,rpeaks$group));
-	}
-	return(allpeaksfinale);
-}
-
-groupPeaksSimple = function(pks,rtwin=60) {
-	npeaks = nrow(pks); 
-	if(npeaks < 2 ) { pks$group=1; return(pks); }
-	groups=rep(0,npeaks); 
-	groups=cutree(hclust(dist(data.frame(pks$rt,groups)),method="average"),h=rtwin);
-	pks$group = groups;
-	return(pks);
-}
-
-groupPeaksNew = function(allpeaks, EIC) { 
-	npeaks = nrow(allpeaks); 
-	if(npeaks < 2 ) { allpeaks$group=1; return(allpeaks); }
-	allpeaks$group = 1;
-
-	spline = smooth.spline(EIC$rt, EIC$intensity)
-	groupBounds = findBounds(spline)
-	#baseLine	= findBaseLine(EIC);
-	plot(spline,type="l"); points(spline$x[ groupBounds$pos ], spline$y[ groupBounds$pos], type="p"); lines(baseLine, col=2);
-	groupIds = rep(0, nrow(allpeaks));
-	overlapScore = rep(0, nrow(allpeaks));
-
-	if ( nrow(groupBounds) == 0 ) return(allpeaks); 
-
-	for ( i in 1:nrow(groupBounds)) {
-		rtmin = spline$x[ groupBounds$minpos[i] ];
-		rtmax = spline$x[ groupBounds$maxpos[i] ];
-		for ( j in 1:nrow(allpeaks) ) { 
-			overlap = checkOverlap(rtmin,rtmax,allpeaks$rtmin[j], allpeaks$rtmax[j]);
-			if ( overlap > overlapScore[j] ) {
-					groupIds[j] = i;
-					overlapScore[j] = overlap;
-			}
-		}
-	}
-
-	allpeaks$group = groupIds;
-	return(reduceGroups(allpeaks));
-}
-
-reduceGroups = function(cpeaks) { 
 	groupNames =  paste(unique(cpeaks$group));
 	sampleNames = paste(unique(cpeaks$sample));
 
-	allpeaksfinale=data.frame(); 
 	rpeaks=data.frame();	
 	for (gid in groupNames) {
 		for(sid in sampleNames) {
@@ -302,64 +218,57 @@ reduceGroups = function(cpeaks) {
 		}
 	}
 
+	if ( plot==TRUE) {
+		ngroups = max(rpeaks$group);
+		plotSamples(sid1,showPeaks=FALSE);
+		points(rpeaks$rt/60,rpeaks$intensity,cex=2,pch=19,col=rainbow(ngroups)[rpeaks$group]);
+		print(table(rpeaks$sample,rpeaks$group));
+	}
+
 	allpeaksfinale=rbind(allpeaksfinale,rpeaks);
 	return(allpeaksfinale);
 }
 
+groupPeaksSimple = function(pks,rtwin=60) {
+	npeaks = nrow(pks); 
+	if(npeaks < 2 ) return(1);
+	groups=rep(0,npeaks); 
+	groups=cutree(hclust(dist(data.frame(pks$rt,groups)),method="average"),h=rtwin);
+	pks$group = groups;
+	return(pks);
+}
 
 alignSamples = function() {
 	cat("Aligning samples\n")
 
-	minIntensity = 100;		#align only peaks with intensity at least this high
-	minNObs = 10;			#align samples only if they share this many peaksj
+	minIntensity = 1000;	#align only peaks with intensity at least this high
+	minNObs = 20;	#align samples only if they share this many peaksj
+	minCor	= 0.9;	#align samples only if groups have high correlations
 	gpeaks =  mzrock$samples$intensity > minIntensity;
+	N = sum(gpeaks,na.rm=TRUE);
 
 	rtmatrix=tapply( as.numeric(rownames(mzrock$samples))[gpeaks], 
-			list(mzrock$samples$srmid[gpeaks],mzrock$samples$sample[gpeaks]), 
+			list(mzrock$samples$sample[gpeaks],mzrock$samples$srmid[gpeaks]), 
 			function(x) { s=mzrock$samples[x,]; if(max(s$intensity,na.rm=TRUE)>minIntensity) { s$rt[which.max(s$intensity)];} else { return(NA); }}
 	);
 
-	ionsmatrix=tapply( as.numeric(rownames(mzrock$samples))[gpeaks], 
-			list(mzrock$samples$srmid[gpeaks],mzrock$samples$sample[gpeaks]), 
-			max, na.rm=TRUE
-	);
+	blankSamples = grep("blank", rownames(rtmatrix));	
+	rtmatrix  = rtmatrix[ -blankSamples, ];	#remove blanks from the alignment
 
-	N=ncol(rtmatrix);	#number of samples
-	#blankSamples = grep("blank", colnames(rtmatrix), ignore.case=TRUE);	
-	#if ( length(blankSamples) > 0 ) rtmatrix  = rtmatrix[ -blankSamples, ];	#remove blanks from the alignment
+	N=nrow(rtmatrix);
+	grpMedianRt=apply(rtmatrix,2, median,na.rm=TRUE);
 
-	filterFunction= function(X) { X[ abs((X-mean(X,na.rm=TRUE))/sd(X,na.rm=TRUE)) > 1 ] = NA; X; } 
-	for (i in 1:nrow(rtmatrix))  rtmatrix[i,] = filterFunction(rtmatrix[i,]);
-	grpMedianRt=apply(rtmatrix,1, median,na.rm=TRUE); #median retention time for the highest intestity point within eic
-
-	#ord EICs by retention time of the highest intensity peak
-	orderOfGroups = order(grpMedianRt);		
-	grpMedianRt=grpMedianRt[orderOfGroups];
-	rtmatrix = rtmatrix[orderOfGroups, ];
-	ionsmatrix = ionsmatrix[orderOfGroups, ];
-
-
-	prefix =   setupReportDir();
-	filename = paste(prefix, "alignmentReport.pdf", sep="");
-	pdf(filename,width=11,height=8);
-	par(mfrow=c(2,2));
 	for(i in 1:N) { 
-		sampleName = colnames(rtmatrix)[i];
-		sampleRt =  rtmatrix[,i];
-		sampleIons = ionsmatrix[,i];
-		weights = sampleIons/median(sampleIons,na.rm=TRUE);
-		weights[is.na(weights)]=0;
-		nobs = sum(!is.na(grpMedianRt + sampleRt)); 
-		if(nobs < minNObs) next;
-		#fit=lm(grpMedianRt~rtmatrix[,i]); a=coef(fit)[2]; b=coef(fit)[1]; 
-		#fit = loess(grpMedianRt ~ sampleRt)
-		fit = smooth.spline(sampleRt,grpMedianRt,w=weights,spar=1.5);
-		plot(grpMedianRt,sampleRt,main=sampleName,xlab="Retention Time(sample)", ylab="Retention Time(median of all samples)");
-		lines(fit$y, fit$x,col=2,lwd=2);
+		sampleName = rownames(rtmatrix)[i];
+		nobs = sum(!is.na(grpMedianRt + rtmatrix[i,])); 
+		if(nobs < 20) next;
+		if(cor(grpMedianRt,rtmatrix[i,],use="complete.obs") < minCor) next;
+		fit=lm(grpMedianRt~rtmatrix[i,]); a=coef(fit)[2]; b=coef(fit)[1]; 
 		subset=mzrock$samples$sample == sampleName;
-		mzrock$samples$rt[subset] = predict(fit,mzrock$samples$rt[subset])$y
+		if ( is.na(a) || is.na(b) ) next;
+		mzrock$samples$rt[subset] = mzrock$samples$rt[subset]*a+b;
+		cat(sampleName,nobs,a,b,"\n");
 	}
-	dev.off();
 }
 
 getQuality <- function(peaks=mzrock$peaks) {
@@ -501,53 +410,6 @@ getPeaks <- function(srmID=NA,sampleName=NA,groupID=NA) {
 	} else {
 		return(mzrock$peaks);
 	}
-}
-
-findBaseLine = function(EIC) { 
-	q=quantile(EIC$intensity,prob=0.7,na.rm=TRUE); 
-	filteredPoint = EIC$intensity<q;
-	spline = smooth.spline(EIC$rt[filteredPoint], EIC$intensity[filteredPoint]);
-	return(spline);
-}
-	
-
-
-findBounds = function(spline) { 
-	y=spline$y;
-	peakPositions = detectSlopeChanges(spline$y);
-	N = length(peakPositions);
-	len = length(spline$y);
-
-	peaks = data.frame();
-	for (i in 1:length(peakPositions)) { 
-		pos = peakPositions[i];
-		if ( is.null(pos) ) next;
-		ii = pos - 1;
-		jj = pos + 1;
-		if ( ii < 0   ) next;
-		if ( jj > len ) next;
-
-		minposi = ii;	#left bound
-		minposj = jj;	#right bound
-			
-		while(ii > 0){ 
-			if (y[ii]<=y[minposi]) minposi=ii;
-			if (y[ii]>y[pos]) break;
-			if (y[ii]<y[pos]*0.1) break;
-			ii=ii-1;
-		}
-
-		#peak area calculation.. right bound
-		while(jj < len ){ 
-			if (y[jj]<=y[minposj]) minposj=jj;
-			if (y[jj]>y[pos]) break;
-			if (y[jj]<y[pos]*0.1) break;
-			jj=jj+1;  
-		}
-#		cat( pos, minposi, minposj, "\n");
-		peaks = rbind( peaks, list('pos'=pos, 'minpos'=minposi, 'maxpos'=minposj));
-	}
-	return(peaks);
 }
 
 
@@ -698,10 +560,14 @@ peak.thresh=function(wc, value)
 enumeratePeaks<- function(sample,plot=FALSE) {
 	
 	peaks = data.frame();
-	len=nrow(sample); if (len < 4 ) return (peaks); 
+	len=nrow(sample); if (len <= 4 ) return (peaks); 
 
-	d=modwt(sample$intensity,wf="mb4",n.levels=4);	#wavelet transform
-    	factor <- quantile(abs(d[["d1"]]),seq(0,1,0.01))
+	#correct for samples with two few observations
+	x=sample$intensity;
+	if (length(x) < 16) {  x=c(x,rep(0,16-length(x))); }
+	d=modwt(x,wf="mb4",n.levels=4);	#wavelet transform
+	
+   	factor <- quantile(abs(d[["d1"]]),seq(0,1,0.01))
 	maxpos = which.max(sample$intensity);
 
 	i=95;
@@ -910,81 +776,6 @@ plotCategoryGroup = function(srmids,X) {
 	par(mfrow=c(1,1));
 }
 
-#for selected groups write out pdf report
-writePredictionPDF <- function(prefix,keepGroupsList) {
-
-	#set up sample colors
-	mzrock$sampleNames = unique(paste(mzrock$samples$sample));
-	mzrock$sampleColors = rainbow(length(mzrock$sampleNames),start=0.2,end=0.9);
-	mzrock$sampleColors[ mzrock$blankSamples ] = "red"; 
-
-	filename = paste(prefix, "predictionReport.pdf", sep="");
-
- 	pdf(filename,width=11,height=8);  # Bryson's fault
-	for (gid in keepGroupsList) {
-			gpeaks = getPeaks(groupID=gid);
-			srmid = paste(gpeaks$srmid[1]);
-			compoundName =  guessCompoundName(srmid);
-			compoundSamples = getCompound(srmid);
-			sampleNames = unique(paste(compoundSamples$sample));
-
-			layout(matrix(c(1,2,1,1), 2, 2, byrow = TRUE)); 
-
-			#centered plot
-			rtmin=min(gpeaks$rt)-200; rtmax=max(gpeaks$rt)+350;
-			plotSamples(srmid,compoundSamples=compoundSamples,
-					showPeaks=TRUE,
-					showLegend=TRUE,showBestGuessRt=FALSE,
-					plotTitle=paste(compoundName, gid),
-					rtmin=rtmin,rtmax=rtmax,groupID=gid
-			);
-			
-			#upper right conner plot
-			colors = mzrock$sampleColors[ mzrock$sampleNames %in% sampleNames ];
-			bars = rep(0,length(sampleNames)); names(bars)=sampleNames;
-			z=tapply(gpeaks$intensity-gpeaks$noiseLevel,gpeaks$sample,max);
-			bars[rownames(z)] = z; ymax=max(z,na.rm=TRUE)*1.2; if (ymax<32) ymax=32; 
-			barplot(bars,col=colors,xaxt="n",las=1,ylim=c(0,ymax),cex.axis=0.6);
-
-			#black bars with probabilites
-			bars = rep(0,length(sampleNames)); names(bars)=sampleNames;
-			z=tapply((1-gpeaks$posterior.g),gpeaks$sample,max)*z;
-			bars[rownames(z)] = z;
-			barplot(z,width=0.3,space=3,col="black",add=TRUE,axes=FALSE,axisnames=FALSE);
-			layout(matrix(c(1,1,1,1), 2, 2, byrow = TRUE)); 
-	}
-	dev.off();
-}
-
-#for selected groups write out quality and groups vs samples report
-#prefix = directory name where spreadsheets will be written
-#Q = quality matrix computed via getQuality
-#keepGroupsList = subset list of groups for which report will be written
-writeSpreadSheets <- function(prefix,Q,keepGroupsList) {
-
-	#keep only peaks in keep group
-	Q = subset(Q, group %in% keepGroupsList);
-
-	#create piviot table
-	X=tapply(Q$areaTop, list(Q$group,Q$sample), max);
-	Xcompound = tapply(Q$compound, Q$group, function(x){paste(x[1])});
-	X = cbind(Xcompound,X);	
-	gstats = groupStats(mzrock$peaks);
-	X = cbind(gstats[rownames(X), c("groupRank","grpNGoodSamples", "grpMedianRt")], X);		
-	
-	filename1 = paste(prefix, "highestPeaks.csv", sep="");
-	filename2 = paste(prefix, "qualityControl.csv",sep="");
-
-	write.csv(X, filename1,row.names=FALSE);
-	write.csv(Q[, c("group", "compound", "sample", "posterior.g", "rt", "areaTop", 
-							"baseCorrectedIntensity", "baseCorrectedArea", "noNoiseObs", 
-							"isBlank", "groupRank", "rtmin", "rtmax") ],
-				file=filename2,
-				row.names=FALSE);
-}
-
-
-
 writeReport <- function(model) { 
 
 	#calculate peak features and various quality features
@@ -1018,6 +809,7 @@ writeReport <- function(model) {
 		#if there is user specified retention time, group we must keep is 0
 		#else it is group 1
 
+		expectedRt = getUserSpecifiedRt(sid);
 		keptGroupCount=0;
 		for ( grp in rownames(gstats) ) {
 			group = gstats[ grp, ];
@@ -1034,24 +826,92 @@ writeReport <- function(model) {
 		     keepGroupsList = c( keepGroupsList, rownames(gstats)[1]);
 		     keptGroupCount=keptGroupCount+1;
 		}
-		#cat(sid, keptGroupCount, "\n");
+		cat(sid, keptGroupCount, "\n");
 	}
+
+	#keep only peaks in keep group
+	Q = subset(Q, group %in% keepGroupsList);
 
 	#crete directory for reports
 	dir.create("reports",showWarnings=FALSE);
-	#prefix name of the working directory to the name of output file
+
+	#prefix
 	dirname= gsub(".*/", "", getwd(), perl=TRUE);  # Bryson's fault
 	prefix = paste("reports/", dirname,"-", sep="");
 
-	#write out reports
-	writeSpreadSheets(prefix, Q, keepGroupsList );
-	writePredictionPDF(prefix , keepGroupsList );
-
-	#strict report for groups where at least third of samples contain good peaks
-	frcGoodSamples=tapply(mzrock$peaks$posterior.g,mzrock$peaks$group,function(x){ sum(x>0.5)/length(x); }); 
-	keepGroupsList =  names(frcGoodSamples[ frcGoodSamples > 0.3 ]);
-	writePredictionPDF( paste(prefix, "strict-", sep=""), keepGroupsList );
+	#create piviot table
+	X=tapply(Q$areaTop, list(Q$group,Q$sample), max);
+	Xcompound = tapply(Q$compound, Q$group, function(x){paste(x[1])});
+	X = cbind(Xcompound,X);	
+	gstats = groupStats(mzrock$peaks);
+	X = cbind(gstats[rownames(X), c("groupRank","grpNGoodSamples", "grpMedianRt")], X);		
 	
+	write.csv(X, paste(prefix, "highestPeaks.csv", sep=""));
+	write.csv(Q[, c("group", "compound", 
+							"sample", 
+							"posterior.g", 
+							"rt", 
+							"areaTop", 
+							"baseCorrectedIntensity", 
+							"baseCorrectedArea", 
+							"noNoiseObs", 
+							"isBlank",
+							"groupRank",
+							"rtmin", 
+							"rtmax") ],
+					file=paste(prefix, "qualityControl.csv",sep=""),
+					row.names=FALSE);
+
+	#order of samples and their colors
+	mzrock$sampleNames = unique(paste(mzrock$samples$sample));
+	mzrock$sampleColors = rainbow(length(mzrock$sampleNames),start=0.2,end=0.9);
+	mzrock$sampleColors[ mzrock$blankSamples ] = "red"; 
+
+    pdf(paste(prefix, "stackedPlots.pdf", sep=""),width=11,height=8);    # Bryson's fault
+    pdf(paste(prefix, "predictionReport.pdf", sep=""),width=11,height=8);  # Bryson's fault
+
+#	pdf("reports/stackedPlots.pdf",width=11,height=8);
+#	pdf("reports/predictionReport.pdf",width=11,height=8);
+
+	for (gid in keepGroupsList) {
+			gpeaks = getPeaks(groupID=gid);
+			srmid = paste(gpeaks$srmid[1]);
+			compoundName =  guessCompoundName(srmid);
+			compoundSamples = getCompound(srmid);
+			sampleNames = unique(paste(compoundSamples$sample));
+			
+			dev.set(dev.prev()); 
+			plotStackedPlots(srmid,compoundSamples);
+
+			dev.set(dev.next());
+			layout(matrix(c(1,2,1,1), 2, 2, byrow = TRUE)); 
+
+			#centered plot
+			rtmin=min(gpeaks$rt)-200; rtmax=max(gpeaks$rt)+350;
+			plotSamples(srmid,compoundSamples=compoundSamples,
+					showPeaks=TRUE,
+					showLegend=TRUE,showBestGuessRt=FALSE,
+					plotTitle=paste(compoundName, gid),
+					rtmin=rtmin,rtmax=rtmax,groupID=gid
+			);
+			
+			#upper right conner plot
+			colors = mzrock$sampleColors[ mzrock$sampleNames %in% sampleNames ];
+			bars = rep(0,length(sampleNames)); names(bars)=sampleNames;
+			z=tapply(gpeaks$intensity-gpeaks$noiseLevel,gpeaks$sample,max);
+			bars[rownames(z)] = z; ymax=max(z,na.rm=TRUE)*1.2; if (ymax<32) ymax=32; 
+			barplot(bars,col=colors,xaxt="n",las=1,ylim=c(0,ymax),cex.axis=0.6);
+
+			bars = rep(0,length(sampleNames)); names(bars)=sampleNames;
+			z=tapply((1-gpeaks$posterior.g),gpeaks$sample,max)*z;
+			bars[rownames(z)] = z;
+			barplot(z,width=0.3,space=3,col="black",add=TRUE,axes=FALSE,axisnames=FALSE);
+			layout(matrix(c(1,1,1,1), 2, 2, byrow = TRUE)); 
+#			readline("Press Enter");
+	}
+	dev.off();
+	dev.off();
+
 	#create categories
 	#categories=tapply(COMPOUNDS$category,COMPOUNDS$srmId, function(x){paste(x[1])});
 	
@@ -1221,6 +1081,51 @@ plotSamples<-function(srmId,compoundSamples=NULL,showPeaks=TRUE,showPoints=FALSE
 		}
 }
 
+
+getSpectraFromDB=function(srmid) {
+
+	sql = paste("select sample,spectra from spectra where srmid = '",srmid,"'",sep="");
+	if (! exists("mzrock$channel")) { 
+			library("RODBC");
+			mzrock$channel = odbcConnect("quaddb"); 
+	} #connect to database
+
+	d=sqlQuery(mzrock$channel,sql);
+	rt=c(); intensity=c(); sample=c();
+	
+	for(i in 1:nrow(d)) {
+		z = textConnection(paste(d$spectra[i]));
+		zz=scan(z," ");
+		zzz=matrix(as.double(unlist(lapply(zz,strsplit, ":"))),ncol=2,byrow=TRUE);
+		rt=c(rt,zzz[,2]);
+		intensity=c(intensity,zzz[,1]);
+		sample=c(sample, rep(paste(d$sample[i]),nrow(zzz)));
+		close(z);
+	}
+
+	mzrock$samples = data.frame(rt=rt,intensity=intensity,sample=sample);
+	mzrock$samples$srmid=srmid;
+
+	mzrock$sampleNames = unique(paste(d$sample))
+	mzrock$sampleColors = rainbow(length(mzrock$sampleNames))
+	mzrock$peaks=calculatePeaks(srmid,plot=FALSE);
+
+	if (nrow(mzrock$peaks) > 0 ) {
+		mzrock$peaks$group = paste(mzrock$peaks$srmid, "Group", mzrock$peaks$groupRank);
+		q=getQuality(mzrock$peaks);
+		p=predict(model,q,type="prob");
+		mzrock$peaks$posterior.g = p[, 'g'];
+	}
+}
+
+
+
+plotIntensityMatrix=function() {
+	M=tapply(log2(mzrock$samples$intensity),list(cut(mzrock$samples$rt,breaks=100),mzrock$samples$sample), max, na.rm=TRUE )
+	hc=hclust(dist(t(M)))
+	levelplot(M[,hc$order])
+	return(M[,hc$order]);
+}
 
 
 #run functions
